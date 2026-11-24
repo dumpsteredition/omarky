@@ -26,7 +26,9 @@ The cog reopens setup. You can pair a second conversation the same way, and then
 
 ## Agent support
 
-The public targets are the agents in stock stable Omarchy’s sign-in panel. This preview is for **Codex**. Claude Code and Grok are not offered as working destinations here. No custom chat UI is required. The marked image and note are handled by your selected agent using its own account, model and normal permissions; “local connection” does not mean a cloud-backed model runs offline.
+**Codex:** direct Send targets a conversation open in the paired Codex terminal. Your agent uses its own account, model, and permissions; a local connection to the terminal does not make a cloud model run offline.
+
+**Claude Code and Grok:** use **Copy**, then paste into the chat you choose. Neither is offered as a direct Send destination in this preview. [Claude Code channels](https://code.claude.com/docs/en/channels) require an opted-in session; [Grok’s documented scripting interface](https://docs.x.ai/build/cli/headless-scripting) does not establish delivery to an already-open terminal. OMarky does not open a substitute chat.
 
 ## Update or remove
 
