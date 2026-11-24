@@ -16,7 +16,7 @@ Review Omarchy’s prompt: third-party plugins run with your user’s permission
 
 ## Try it
 
-1. Open OMarky from the bar and choose your chat. For the Codex preview, pair the **real Codex terminal** using the [Codex setup instructions](docs/codex.md). In Codex’s picker, choose the conversation you want to keep working in; keep it open. Return to OMarky and rescan. A running app or an old transcript is not a destination.
+1. Open OMarky from the bar and click **Choose a chat**. If none are connected yet, select **Open Codex picker…**. In Codex’s own terminal, choose the existing conversation you want to keep working in and leave it open. Return to OMarky and click **Rescan**. If the picker button is unavailable, use the [terminal pairing instructions](docs/codex.md).
 2. Choose the conversation by project and title. A practice card appears. Circle **any one key** and press **Send**. Your chat gets the marked PNG and editable question. Its answer must identify that key before OMarky saves this connection.
 3. Now open OMarky over your work. Draw, add a note if you like, and press **Send**. By default the image is the full focused display, including everything visible on it; choose **Crop** to share only a region. Copy sends nothing to your agent. Escape closes the canvas.
 
