@@ -9,12 +9,15 @@ import tempfile
 import threading
 import types
 import unittest
+from unittest.mock import patch
 
 from app import omarky
 from app.practice import new_practice_card
 from app.prefs_firstuse import (
+    CONNECTORS,
     active_target,
     load_preferences,
+    normalize_target,
     preferences_path,
     save_verified_target,
     set_active_verified,
@@ -47,6 +50,13 @@ def circle_stroke(key, points=96):
 
 
 class FirstUseStateTests(unittest.TestCase):
+    def test_only_implemented_codex_targets_are_supported(self):
+        self.assertEqual(CONNECTORS, frozenset(("codex",)))
+        self.assertIsNotNone(normalize_target(TARGET_A))
+        unsupported = {**TARGET_A, "connector": "pi"}
+        self.assertIsNone(normalize_target(unsupported))
+        self.assertEqual(omarky._display_label(unsupported, []), "Unknown conversation")
+
     def test_route_identity_keeps_same_thread_in_different_projects_separate(self):
         self.assertNotEqual(target_identity(TARGET_A), target_identity(TARGET_B))
         self.assertEqual(TARGET_A["thread_id"], TARGET_B["thread_id"])
@@ -175,7 +185,7 @@ class FirstUseSendTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertEqual(saved, [])
 
-    def test_no_mark_changed_dimensions_or_key_in_editable_note_never_reach_connector(self):
+    def test_pre_send_validation_failures_are_recoverable_and_never_reach_connector(self):
         calls = []
         handler = omarky._make_send_handler(
             TARGET_A,
@@ -185,10 +195,18 @@ class FirstUseSendTests(unittest.TestCase):
         no_mark = {"width": self.card.width, "height": self.card.height, "strokes": []}
         wrong_size = {**self.meta, "width": self.card.width - 1}
         label_in_note = f"Read {self.key.label} and confirm it."
+        results = [
+            handler(self.marked_png, self.card.note, None),
+            handler(self.marked_png, self.card.note, no_mark),
+            handler(self.marked_png, self.card.note, wrong_size),
+            handler(self.marked_png, label_in_note, self.meta),
+        ]
 
-        self.assertEqual(handler(self.marked_png, self.card.note, no_mark)["status"], "uncertain")
-        self.assertEqual(handler(self.marked_png, self.card.note, wrong_size)["status"], "uncertain")
-        self.assertEqual(handler(self.marked_png, label_in_note, self.meta)["status"], "uncertain")
+        for result in results:
+            self.assertEqual(result["status"], "wrong")
+            self.assertIn("nothing was sent", result["message"].casefold())
+            self.assertIn("circle just one key", result["message"].casefold())
+        self.assertIn("remove key labels", results[-1]["message"].casefold())
         self.assertEqual(calls, [])
 
     def test_single_send_gate_blocks_a_concurrent_second_request(self):
@@ -281,6 +299,136 @@ class FirstUseCanvasHandoffTests(unittest.TestCase):
         self.assertEqual(calls[0]["target_label"], TARGET_A["label"])
         self.assertTrue(callable(calls[0]["on_choose"]))
         self.assertTrue(callable(calls[0]["on_send"]))
+
+
+class FirstUsePickerTests(unittest.TestCase):
+    def _window(self, guidance=None):
+        class FakeWidget:
+            def __init__(self, text, callback=None):
+                self.text = text
+                self.callback = callback
+
+        class FakeBox:
+            def __init__(self, **_kwargs):
+                self.children = []
+
+            def pack_start(self, child, *_args):
+                self.children.append(child)
+
+        window = object.__new__(omarky.FirstUseWindow)
+        window.Gtk = types.SimpleNamespace(
+            Orientation=types.SimpleNamespace(HORIZONTAL=0),
+            Box=FakeBox,
+        )
+        window.guidance = list(guidance or [])
+        setattr(window, "rendered", [])
+        window._label = lambda text, *_args, **_kwargs: FakeWidget(text)
+        window._button = lambda text, style, callback: FakeWidget(text, callback)
+        window._replace_content = lambda widgets: setattr(window, "rendered", widgets)
+        return window, FakeWidget, FakeBox
+
+    def test_picker_argv_uses_omarchy_app_id_and_plugin_relative_launcher(self):
+        with tempfile.TemporaryDirectory(prefix="omarky-picker-") as temporary:
+            plugin_root = Path(temporary) / "plugin"
+            (plugin_root / "app").mkdir(parents=True)
+            picker = plugin_root / "bin" / "omarky-codex"
+            picker.parent.mkdir()
+            picker.write_text("mock launcher", encoding="utf-8")
+            picker.chmod(0o755)
+            launcher = "/usr/share/omarchy/bin/omarchy-launch-tui"
+
+            with (
+                patch.object(omarky, "__file__", str(plugin_root / "app" / "omarky.py")),
+                patch.object(omarky, "_direct_codex_binary", return_value="/usr/bin/codex"),
+                patch.object(omarky, "_omarchy_launch_tui", return_value=launcher),
+            ):
+                self.assertEqual(
+                    omarky._codex_picker_argv(),
+                    [launcher, "--app-id=org.omarchy.agent", str(picker)],
+                )
+
+        with patch.object(omarky, "_direct_codex_binary", return_value=None):
+            self.assertIsNone(omarky._codex_picker_argv())
+
+    def test_no_targets_exposes_one_picker_action_and_keeps_fallbacks_without_launching(self):
+        window, FakeWidget, FakeBox = self._window(
+            ["To pair explicitly, run bin/omarky-codex in a terminal."]
+        )
+        command = [
+            "/usr/share/omarchy/bin/omarchy-launch-tui",
+            "--app-id=org.omarchy.agent",
+            "/plugin/bin/omarky-codex",
+        ]
+        with patch.object(omarky, "_codex_picker_argv", return_value=command), patch.object(
+            omarky.subprocess, "Popen"
+        ) as launch:
+            window.show_no_targets()
+            launch.assert_not_called()
+
+        widgets = [widget for widget, _expand, _fill in getattr(window, "rendered")]
+        labels = [widget.text for widget in widgets if isinstance(widget, FakeWidget)]
+        self.assertEqual(labels.count("Open Codex picker…"), 1)
+        self.assertTrue(any("bin/omarky-codex in a terminal" in text for text in labels))
+        actions = next(widget for widget in widgets if isinstance(widget, FakeBox))
+        self.assertEqual([item.text for item in actions.children], ["Rescan", "Copy only", "Leave"])
+
+    def test_picker_click_uses_mocked_launcher_and_selected_account_environment(self):
+        window = object.__new__(omarky.FirstUseWindow)
+        command = [
+            "/usr/share/omarchy/bin/omarchy-launch-tui",
+            "--app-id=org.omarchy.agent",
+            "/plugin/bin/omarky-codex",
+        ]
+        env = {"CODEX_HOME": "/accounts/current"}
+        with (
+            patch.object(omarky, "_codex_picker_argv", return_value=command),
+            patch.object(omarky, "_codex_launch_environment", return_value=env),
+            patch.object(omarky.subprocess, "Popen") as launch,
+        ):
+            window._open_codex_picker()
+        launch.assert_called_once_with(command, env=env, close_fds=True)
+
+    def test_omarchy_account_selection_replaces_parent_pin_but_preserves_explicit_home(self):
+        helper = "/usr/sbin/omarchy-agent-account-home"
+        parent = {
+            "PATH": "/usr/bin",
+            "CODEX_HOME": "/accounts/parent",
+            "OMARCHY_AGENT_CODEX_HOME": "/accounts/parent",
+        }
+        completed = subprocess.CompletedProcess([helper, "codex"], 0, stdout="/accounts/current\n")
+        with patch.object(omarky.shutil, "which", return_value=helper), patch.object(
+            omarky.subprocess, "run", return_value=completed
+        ) as lookup:
+            selected = omarky._codex_launch_environment(parent)
+        self.assertEqual(selected["CODEX_HOME"], "/accounts/current")
+        self.assertEqual(selected["OMARCHY_AGENT_CODEX_HOME"], "/accounts/current")
+        lookup.assert_called_once_with(
+            [helper, "codex"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            check=True,
+            timeout=2,
+        )
+
+        explicit = {"PATH": "/usr/bin", "CODEX_HOME": "/accounts/explicit", "OMARCHY_AGENT_CODEX_HOME": "/old-pin"}
+        with patch.object(omarky.shutil, "which", return_value=helper), patch.object(
+            omarky.subprocess, "run"
+        ) as lookup:
+            preserved = omarky._codex_launch_environment(explicit)
+        self.assertEqual(preserved["CODEX_HOME"], "/accounts/explicit")
+        self.assertNotIn("OMARCHY_AGENT_CODEX_HOME", preserved)
+        lookup.assert_not_called()
+
+    def test_main_account_home_is_pinned_without_explicit_codex_home(self):
+        helper = "/usr/sbin/omarchy-agent-account-home"
+        completed = subprocess.CompletedProcess([helper, "codex"], 0, stdout="")
+        with patch.object(omarky.shutil, "which", return_value=helper), patch.object(
+            omarky.subprocess, "run", return_value=completed
+        ):
+            selected = omarky._codex_launch_environment({"PATH": "/usr/bin"})
+        self.assertEqual(selected["OMARCHY_AGENT_CODEX_HOME"], "")
+        self.assertNotIn("CODEX_HOME", selected)
 
 
 class FirstUseCliTests(unittest.TestCase):

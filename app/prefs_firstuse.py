@@ -10,7 +10,7 @@ from pathlib import Path
 import tempfile
 from typing import Mapping
 
-CONNECTORS = frozenset(("codex", "pi"))
+CONNECTORS = frozenset(("codex",))
 TARGET_FIELDS = ("connector", "endpoint", "thread_id", "label")
 
 

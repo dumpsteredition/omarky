@@ -9,10 +9,14 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import os
 import re
+import shutil
+import subprocess
 import sys
 import threading
 import uuid
+from pathlib import Path
 from typing import Callable, Iterable, Mapping
 
 try:  # Direct script execution puts app/ on sys.path; tests import app.*.
@@ -64,6 +68,80 @@ def _note_names_key(note: str, labels: Iterable[str]) -> bool:
     )
 
 
+def _direct_codex_binary() -> str | None:
+    """Use the connector's direct-binary check; never invoke a PATH shim."""
+    module_names = ["codex_route"]
+    if __package__:
+        module_names.insert(0, f"{__package__}.codex_route")
+    for module_name in module_names:
+        try:
+            route = importlib.import_module(module_name)
+        except ModuleNotFoundError:
+            continue
+        except Exception:
+            return None
+        finder = getattr(route, "find_codex_binary", None)
+        if callable(finder):
+            try:
+                binary = finder()
+            except Exception:
+                return None
+            return binary if isinstance(binary, str) and binary else None
+    return None
+
+
+def _omarchy_launch_tui() -> str | None:
+    packaged = Path("/usr/share/omarchy/bin/omarchy-launch-tui")
+    if packaged.is_file() and os.access(packaged, os.X_OK):
+        return str(packaged)
+    return shutil.which("omarchy-launch-tui")
+
+
+def _codex_picker_argv() -> list[str] | None:
+    """Return the native launcher argv only when its real pieces are available."""
+    if not _direct_codex_binary():
+        return None
+    plugin_root = Path(__file__).resolve().parent.parent
+    picker = plugin_root / "bin" / "omarky-codex"
+    if not picker.is_file() or not os.access(picker, os.X_OK):
+        return None
+    launcher = _omarchy_launch_tui()
+    if not launcher:
+        return None
+    return [launcher, "--app-id=org.omarchy.agent", str(picker)]
+
+
+def _codex_launch_environment(environ: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Carry the currently selected Omarchy Codex account into the new TUI."""
+    env = dict(os.environ if environ is None else environ)
+    home_key = "CODEX_HOME"
+    pin_key = "OMARCHY_AGENT_CODEX_HOME"
+    if pin_key in env and env.get(home_key, "") == env[pin_key]:
+        env.pop(home_key, None)
+    env.pop(pin_key, None)
+
+    if not env.get(home_key):
+        env.pop(home_key, None)
+        helper = shutil.which("omarchy-agent-account-home")
+        if helper:
+            try:
+                selected_home = subprocess.run(
+                    [helper, "codex"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    text=True,
+                    check=True,
+                    timeout=2,
+                ).stdout.strip()
+            except (OSError, subprocess.SubprocessError):
+                selected_home = None
+            if selected_home is not None:
+                env[pin_key] = selected_home
+                if selected_home:
+                    env[home_key] = selected_home
+    return env
+
+
 def _make_send_handler(
     target: Mapping | None,
     *,
@@ -94,16 +172,25 @@ def _make_send_handler(
             expected = None
             if practice_card is not None:
                 if not isinstance(meta, Mapping):
-                    return {"status": "uncertain", "message": "Circle exactly one key before sending."}
+                    return {
+                        "status": "wrong",
+                        "message": "Nothing was sent. Circle just one key on the practice image, then try again.",
+                    }
                 if meta.get("width") != practice_card.width or meta.get("height") != practice_card.height:
-                    return {"status": "uncertain", "message": "The practice card changed size; nothing was verified."}
+                    return {
+                        "status": "wrong",
+                        "message": "Nothing was sent. Use the current practice image and circle just one key.",
+                    }
                 expected = marked_key(meta, practice_card)
                 if expected is None:
-                    return {"status": "uncertain", "message": "Circle exactly one key before sending."}
+                    return {
+                        "status": "wrong",
+                        "message": "Nothing was sent. Circle just one key on the practice image, then try again.",
+                    }
                 if _note_names_key(note, practice_card.labels):
                     return {
-                        "status": "uncertain",
-                        "message": "Remove key labels from the note so the chat has to read the image.",
+                        "status": "wrong",
+                        "message": "Nothing was sent. Remove key labels from the note, then circle just one key on the practice image.",
                     }
 
             try:
@@ -449,11 +536,17 @@ class FirstUseWindow:
     def show_no_targets(self):
         heading = self._label("No reachable chats yet.", "omarky-heading")
         body = self._label(
-            "When a Codex or Pi conversation is available, OMarky will show its project and chat identity here. "
+            "When a Codex conversation is available, OMarky will show its project and chat identity here. "
             "Your capture can still be copied without pairing.",
             "omarky-body",
         )
         widgets = [(heading, False, False), (body, False, False)]
+        if _codex_picker_argv() is not None:
+            widgets.append((
+                self._button("Open Codex picker…", "omarky-primary", self._open_codex_picker),
+                False,
+                False,
+            ))
         guidance = self.guidance or [
             "Refresh after starting a supported connector. New conversations must pass the practice image before they can receive a capture."
         ]
@@ -462,6 +555,23 @@ class FirstUseWindow:
             widgets.append((label, False, False))
         widgets.append((self._utility_actions(), False, False))
         self._replace_content(widgets)
+
+    def _open_codex_picker(self, *_args):
+        command = _codex_picker_argv()
+        if command is None:
+            self.guidance = [
+                "The Codex picker is no longer available. Check the terminal instructions below."
+            ] + self.guidance
+            self.show_no_targets()
+            return False
+        try:
+            subprocess.Popen(command, env=_codex_launch_environment(), close_fds=True)
+        except (OSError, subprocess.SubprocessError):
+            self.guidance = [
+                "OMarky could not open the Codex picker. Try the terminal instruction below."
+            ] + self.guidance
+            self.show_no_targets()
+        return False
 
     def show_targets(self):
         if self.mode == "setup":
