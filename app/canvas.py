@@ -17,7 +17,12 @@ import subprocess
 import sys
 import threading
 import time
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
+
+try:
+    from chat_card import save_card
+except ModuleNotFoundError:  # Support package import by the local MCP server.
+    from .chat_card import save_card
 
 import cairo
 import gi
@@ -456,6 +461,112 @@ def publish_clipboard(png: bytes) -> None:
         raise
 
 
+def publish_handoff_clipboard(text: str) -> None:
+    """Offer one inert text handoff and verify exact text clipboard readback."""
+    if not isinstance(text, str):
+        raise TypeError("For chat clipboard content must be text")
+    payload = text.encode("utf-8", "strict")
+    try:
+        owner = subprocess.Popen(
+            ["wl-copy", "--type", "text/plain;charset=utf-8"], stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            close_fds=True, start_new_session=True,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError("wl-copy is required for the For chat handoff") from exc
+    try:
+        if owner.stdin is None:
+            raise RuntimeError("wl-copy did not provide an input pipe")
+        descriptor = owner.stdin.fileno()
+        os.set_blocking(descriptor, False)
+        pending = memoryview(payload)
+        deadline = time.monotonic() + CLIPBOARD_WRITE_TIMEOUT
+        with selectors.DefaultSelector() as writable:
+            writable.register(owner.stdin, selectors.EVENT_WRITE)
+            while pending:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or not writable.select(remaining):
+                    raise TimeoutError("wl-copy did not consume the For chat text in time")
+                try:
+                    written = os.write(descriptor, pending)
+                except BlockingIOError:
+                    continue
+                if written <= 0:
+                    raise BrokenPipeError("wl-copy closed its input before receiving the handoff")
+                pending = pending[written:]
+        owner.stdin.close()
+        try:
+            code = owner.wait(timeout=0.3)
+        except subprocess.TimeoutExpired:
+            code = None  # A live wl-copy process owns the Wayland text offer.
+        if code not in (None, 0):
+            raise RuntimeError(f"wl-copy exited with status {code}")
+        pasted = subprocess.run(
+            ["wl-paste", "--no-newline", "--type", "text/plain;charset=utf-8"],
+            capture_output=True, timeout=5,
+        )
+        if pasted.returncode:
+            detail = pasted.stderr.decode("utf-8", "replace").strip()
+            raise RuntimeError(f"clipboard readback failed{': ' + detail if detail else ''}")
+        if pasted.stdout != payload:
+            raise RuntimeError("clipboard readback differs from the For chat text")
+    except (OSError, subprocess.SubprocessError) as exc:
+        _stop_clipboard_owner(owner)
+        raise RuntimeError(f"could not copy the For chat handoff: {exc}") from exc
+    except Exception:
+        _stop_clipboard_owner(owner)
+        raise
+
+
+def build_handoff_text(card: Mapping[str, Any]) -> str:
+    """Format one human-readable paste request without shell or submit commands."""
+    if not isinstance(card, Mapping):
+        raise ValueError("card storage returned no card details")
+    card_id = card.get("id")
+    image_path = card.get("image_path")
+    note = card.get("note")
+    if (not isinstance(card_id, str) or len(card_id) != 32
+            or any(char not in "0123456789abcdef" for char in card_id)):
+        raise ValueError("card storage returned an invalid ID")
+    if (not isinstance(image_path, str) or not os.path.isabs(image_path)
+            or any(ord(char) < 32 or ord(char) == 127 for char in image_path)):
+        raise ValueError("card storage returned an invalid image path")
+    if not isinstance(note, str):
+        raise ValueError("card storage returned an invalid note")
+    return (
+        f"Use OMarky card {card_id} in this conversation. "
+        f"If the OMarky tool is available, call read_annotation with that ID. "
+        f"Otherwise open this local image: {image_path}\nMy note: {note}"
+    )
+
+
+def invoke_for_chat(marked_png: bytes, note: str, *, card_saver: Any = None,
+                    clipboard_writer: Callable[[str], None] | None = None) -> dict[str, str]:
+    """Save one explicit marked card, then copy its request; never send a chat."""
+    saver = card_saver if card_saver is not None else save_card
+    writer = clipboard_writer if clipboard_writer is not None else publish_handoff_clipboard
+    try:
+        card = saver(marked_png, note)
+        request = build_handoff_text(card)
+    except Exception as exc:
+        return {
+            "status": "error",
+            "message": f"Could not export the marked image path; nothing copied or sent. {type(exc).__name__}: {exc}",
+        }
+    try:
+        writer(request)
+    except Exception as exc:
+        return {
+            "status": "error",
+            "message": (f"Card {card['id']} is saved at {card['image_path']}, but clipboard text "
+                        f"was not verified; nothing was sent. {type(exc).__name__}: {exc}"),
+        }
+    return {
+        "status": "ok",
+        "message": f"Ready to paste · nothing sent · card {card['id']} expires in 30 minutes",
+    }
+
+
 def validated_send_result(result: Any) -> dict[str, str]:
     if not isinstance(result, dict):
         return {"status": "error", "message": "send callback returned no result"}
@@ -495,8 +606,8 @@ def selected_target(current: str, choice: Any) -> str:
 def action_allowed(kind: str, *, target_label: str, has_ink: bool,
                    crop_mode: bool, busy: bool,
                    terminal_state: str | None = None) -> bool:
-    """Copy needs marks, not a paired chat; Send additionally needs a target."""
-    if kind not in {"copy", "send"} or busy or crop_mode or not has_ink:
+    """For chat and Copy need marks, not a paired chat; Send additionally needs a target."""
+    if kind not in {"copy", "for_chat", "send"} or busy or crop_mode or not has_ink:
         return False
     if kind == "send":
         return bool(target_label.strip()) and terminal_state not in {"ok", "uncertain"}
@@ -579,7 +690,8 @@ class AnnotateOverlay:
                  on_choose: Callable[[], str | None] | None,
                  monitor: Any, loop: GLib.MainLoop,
                  *, practice: bool, note: str,
-                 clipboard_writer: Callable[[bytes], None] = publish_clipboard):
+                 clipboard_writer: Callable[[bytes], None] = publish_clipboard,
+                 handoff_writer: Callable[[str], None] = publish_handoff_clipboard):
         self.screenshot = screenshot
         self.pixbuf = decode_pixbuf(screenshot)
         self._scaled_backgrounds: dict[tuple[int, int], GdkPixbuf.Pixbuf] = {}
@@ -590,6 +702,7 @@ class AnnotateOverlay:
         self.loop = loop
         self.practice = practice
         self.clipboard_writer = clipboard_writer
+        self.handoff_writer = handoff_writer
         self.strokes: list[dict[str, Any]] = []
         self.drawing = False
         self.crop_mode = False
@@ -637,6 +750,8 @@ class AnnotateOverlay:
         self.window.connect("delete-event", self.on_delete)
         self.window.connect("destroy", self.on_destroy)
         self.window.show_all()
+        if self.practice:
+            self.for_chat_button.hide()
         if not self.note_expanded:
             self.note_row.hide()
         self.area.grab_focus()
@@ -679,15 +794,17 @@ class AnnotateOverlay:
         self.position_button.connect("clicked", self.on_position_clicked)
         top.pack_start(self.position_button, False, False, 0)
 
+        self.status_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
+        self.toolbar.pack_start(self.status_row, False, False, 0)
         self.status_label = Gtk.Label(label="Ready to mark")
         self.status_label.set_xalign(0.0)
         self.status_label.set_hexpand(True)
         self.status_label.set_width_chars(14)
-        self.status_label.set_max_width_chars(24)
+        self.status_label.set_max_width_chars(36)
         self.status_label.set_ellipsize(Pango.EllipsizeMode.END)
         self.status_label.get_style_context().add_class("omarky-status")
         set_accessible_name(self.status_label, "Annotation status")
-        top.pack_start(self.status_label, True, True, 2)
+        self.status_row.pack_start(self.status_label, True, True, 2)
 
         self.target_label_widget = Gtk.Label()
         self.target_label_widget.set_ellipsize(Pango.EllipsizeMode.END)
@@ -752,18 +869,26 @@ class AnnotateOverlay:
         self.note_toggle_button = self._button("Note", "Add an optional note")
         self.note_toggle_button.connect("clicked", self.on_note_toggle_clicked)
         top.pack_start(self.note_toggle_button, False, False, 0)
+        self.action_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
+        self.action_row.set_halign(Gtk.Align.END)
+        self.toolbar.pack_start(self.action_row, False, False, 0)
         self.cancel_button = self._button("Cancel", "Discard this annotation · Esc")
         self.cancel_button.connect("clicked", self.on_cancel_clicked)
-        top.pack_start(self.cancel_button, False, False, 0)
-        self.copy_button = self._button("Copy", "Copy the marked image only; never send")
+        self.action_row.pack_start(self.cancel_button, False, False, 0)
+        self.copy_button = self._button("Copy", "Copy the marked PNG only; never send")
         self.copy_button.connect("clicked", self.on_copy_clicked)
-        top.pack_start(self.copy_button, False, False, 0)
+        self.action_row.pack_start(self.copy_button, False, False, 0)
+        self.for_chat_button = self._button(
+            "For chat", "Prepare a paste request for the chat you choose; nothing is sent"
+        )
+        self.for_chat_button.connect("clicked", self.on_for_chat_clicked)
+        self.action_row.pack_start(self.for_chat_button, False, False, 0)
         self.send_button = Gtk.Button(label="Send")
         self.send_button.get_style_context().add_class("omarky-primary-button")
-        self.send_button.set_tooltip_text("Send the marked image to the selected chat")
-        set_accessible_name(self.send_button, "Send", "Explicitly send the marked image and note")
+        self.send_button.set_tooltip_text("Send the marked image to the selected Codex chat")
+        set_accessible_name(self.send_button, "Send", "Explicitly send to the selected Codex chat")
         self.send_button.connect("clicked", self.on_send_clicked)
-        top.pack_start(self.send_button, False, False, 0)
+        self.action_row.pack_start(self.send_button, False, False, 0)
 
         self.note_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         self.note_row.set_name("omarky-note-row")
@@ -775,7 +900,7 @@ class AnnotateOverlay:
         self.note_entry.set_hexpand(True)
         self.note_entry.set_width_chars(24)
         self.note_entry.get_style_context().add_class("omarky-entry")
-        self.note_entry.set_tooltip_text("Optional note sent literally with this marked image")
+        self.note_entry.set_tooltip_text("Optional note included literally with Send or For chat")
         set_accessible_name(self.note_entry, "Optional note")
         self.note_entry.set_text(note)
         self.note_row.pack_start(self.note_entry, True, True, 0)
@@ -834,8 +959,10 @@ class AnnotateOverlay:
     def _update_controls(self) -> None:
         locked = self._editing_locked()
         has_ink = bool(self.strokes)
-        self.target_label_widget.set_text(self.target_label or "Copy only")
-        self.target_label_widget.set_tooltip_text(self.target_label or "Copy only; no chat selected")
+        self.target_label_widget.set_text(self.target_label or "No chat selected")
+        self.target_label_widget.set_tooltip_text(
+            self.target_label or "No Codex chat selected · For chat prepares a paste request"
+        )
         self.position_button.set_sensitive(not locked)
         self.note_toggle_button.set_sensitive(not locked)
         self.crop_button.set_sensitive(not locked and not self.practice)
@@ -851,6 +978,7 @@ class AnnotateOverlay:
         self.undo_button.set_sensitive(has_ink and not locked)
         can_publish = has_ink and not self.busy and not self.crop_mode
         self.copy_button.set_sensitive(can_publish)
+        self.for_chat_button.set_sensitive(can_publish and not self.practice)
         self.send_button.set_sensitive(can_publish and bool(self.target_label.strip())
                                        and self.terminal_send_state not in {"ok", "uncertain"})
         self.cancel_button.set_sensitive(not self.busy)
@@ -860,8 +988,12 @@ class AnnotateOverlay:
         for button in self.color_buttons.values():
             button.set_sensitive(not locked)
         self.size_scale.set_sensitive(not locked)
-        if self.busy:
-            self.send_button.set_label("Sending…" if self.action_kind == "send" else "Copying…")
+        self.copy_button.set_label("Copying…" if self.busy and self.action_kind == "copy" else "Copy")
+        self.for_chat_button.set_label(
+            "Preparing…" if self.busy and self.action_kind == "for_chat" else "For chat"
+        )
+        if self.busy and self.action_kind == "send":
+            self.send_button.set_label("Sending…")
         elif self.terminal_send_state == "ok":
             self.send_button.set_label("Sent")
             self.cancel_button.set_label("Done")
@@ -975,7 +1107,7 @@ class AnnotateOverlay:
             self.crop_dragging = False
             self.crop_drag_start = None
             self.crop_drag_end = None
-            self._set_status("Select a crop · Copy/Send disabled")
+            self._set_status("Select a crop · Copy/For chat/Send disabled")
         self.area.grab_focus()
         self.area.queue_draw()
         self._update_controls()
@@ -1127,6 +1259,9 @@ class AnnotateOverlay:
     def on_copy_clicked(self, _button: Gtk.Button) -> None:
         self._start_action("copy")
 
+    def on_for_chat_clicked(self, _button: Gtk.Button) -> None:
+        self._start_action("for_chat")
+
     def on_send_clicked(self, _button: Gtk.Button) -> None:
         self._start_action("send")
 
@@ -1137,6 +1272,9 @@ class AnnotateOverlay:
         self.window.destroy()
 
     def _start_action(self, kind: str) -> None:
+        if kind == "for_chat" and self.practice:
+            self._set_status("For chat is available on routine marking only")
+            return
         if not action_allowed(kind, target_label=self.target_label,
                               has_ink=bool(self.strokes), crop_mode=self.crop_mode,
                               busy=self.busy, terminal_state=self.terminal_send_state):
@@ -1149,7 +1287,7 @@ class AnnotateOverlay:
                 self._set_status("Add a mark first")
                 return
             if kind == "send" and not self.target_label.strip():
-                self._set_status("Choose a chat first · Copy is available")
+                self._set_status("Choose a chat first · For chat works without pairing")
                 return
             return
         image_rect = self._image_rect()
@@ -1161,19 +1299,25 @@ class AnnotateOverlay:
         marked_png = render_marked_png(self.screenshot, image_strokes, bounds)
         meta = build_metadata(self.pixbuf.get_width(), self.pixbuf.get_height(), image_strokes)
         self.last_marked_png = marked_png
-        note = self.note_entry.get_text() if kind == "send" else ""
+        note = self.note_entry.get_text() if kind in {"send", "for_chat"} else ""
         target_label = self.target_label
         self.busy = True
         self.action_kind = kind
         mode = "manual crop" if self.capture_bounds is not None else "full image"
-        self._set_status(f"Copying marked {mode}…" if kind == "copy"
-                         else f"Sending marked {mode}…")
+        if kind == "copy":
+            self._set_status(f"Copying marked {mode}…")
+        elif kind == "for_chat":
+            self._set_status(f"Preparing For chat · {mode}…")
+        else:
+            self._set_status(f"Sending marked {mode}…")
         self._update_controls()
 
         def work() -> None:
             try:
                 if kind == "copy":
                     result = invoke_copy(self.clipboard_writer, marked_png)
+                elif kind == "for_chat":
+                    result = invoke_for_chat(marked_png, note, clipboard_writer=self.handoff_writer)
                 else:
                     result = invoke_send(self.on_send_callback, marked_png, note, meta)
             except Exception as exc:
@@ -1193,6 +1337,10 @@ class AnnotateOverlay:
             self._set_status("Copied marked image · not sent")
         elif kind == "copy":
             self._set_status(f"Copy failed · image and marks kept · {message or status}")
+        elif kind == "for_chat" and status == "ok":
+            self._set_status(message)
+        elif kind == "for_chat":
+            self._set_status(f"For chat failed · {message or status}")
         elif status == "ok":
             self.terminal_send_state = "ok"
             destination = target_label or "selected chat"
@@ -1202,7 +1350,7 @@ class AnnotateOverlay:
             self._set_status("No confirmation · check the chat before retrying"
                              + (f" · {message}" if message else ""))
         else:
-            self._set_status(f"Send {status} · marks and note kept · Copy remains available"
+            self._set_status(f"Send {status} · marks and note kept · Copy and For chat remain available"
                              + (f" · {message}" if message else ""))
         self._update_controls()
         return GLib.SOURCE_REMOVE

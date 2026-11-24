@@ -410,21 +410,21 @@ class FirstUseWindow:
         self.window.show_all()
 
     def show_welcome(self):
-        heading = self._label("Choose the chat doing the work.", "omarky-heading")
+        heading = self._label("Choose how to use OMarky.", "omarky-heading")
         body = self._label(
-            "OMarky will send one practice image only after you press Send. "
-            "It pins a conversation only when that same chat replies with the key you circled.",
+            "For chat prepares a paste request for the conversation you choose. Choose a Codex chat "
+            "only for direct Send; a new Codex chat must pass the practice image first.",
             "omarky-body",
         )
         boundary = self._label(
-            "No chat is selected for you. Nothing is sent while you choose.",
+            "No chat is selected for you. For chat does not open a conversation or send anything.",
             "omarky-body",
         )
         actions = self.Gtk.Box(orientation=self.Gtk.Orientation.HORIZONTAL, spacing=9)
-        choose = self._button("Choose a chat", "omarky-primary", lambda *_: self.start_scan())
-        copy_only = self._button("Copy only", "omarky-secondary", lambda *_: self._finish({"kind": "copy"}))
+        for_chat = self._button("For chat", "omarky-primary", lambda *_: self._finish({"kind": "for_chat"}))
+        choose = self._button("Choose a chat", "omarky-secondary", lambda *_: self.start_scan())
+        actions.pack_start(for_chat, True, True, 0)
         actions.pack_start(choose, True, True, 0)
-        actions.pack_start(copy_only, False, False, 0)
         leave = self._button("Leave", "omarky-secondary", lambda *_: self._finish({"kind": "leave"}))
         self._replace_content([
             (heading, False, False),
@@ -537,11 +537,16 @@ class FirstUseWindow:
     def show_no_targets(self):
         heading = self._label("No reachable chats yet.", "omarky-heading")
         body = self._label(
-            "When a Codex conversation is available, OMarky will show its project and chat identity here. "
-            "Your capture can still be copied without pairing.",
+            "Use For chat to mark an image for any conversation. OMarky prepares a paste request; "
+            "it does not open a chat or send anything.",
             "omarky-body",
         )
         widgets = [(heading, False, False), (body, False, False)]
+        widgets.append((
+            self._button("For chat", "omarky-primary", lambda *_: self._finish({"kind": "for_chat"})),
+            False,
+            False,
+        ))
         if _codex_picker_argv() is not None:
             widgets.append((
                 self._button("Open Codex picker…", "omarky-primary", self._open_codex_picker),
@@ -804,7 +809,7 @@ def _start_desktop(mode: str) -> int:
     if action.get("kind") == "leave":
         return 0
 
-    if action.get("kind") == "copy":
+    if action.get("kind") in {"copy", "for_chat"}:
         reachable = window.targets
         action = {"kind": "capture", "target": None}
     else:
