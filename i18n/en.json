@@ -1,0 +1,10 @@
+{
+  "bar.launch.name": "Open OMarky",
+  "bar.launch.description": "Open the guided tool in your current conversation; use its first-run flow when needed",
+  "bar.launch.tooltip": "Open OMarky; right-click to copy an unused Super shortcut",
+  "bar.setup.name": "Choose or re-pair an OMarky conversation",
+  "bar.setup.description": "Open OMarky setup to choose or re-pair a conversation",
+  "bar.setup.tooltip": "Choose or re-pair an OMarky conversation",
+  "bar.shortcut.copied": "Shortcut snippet copied; paste it into ~/.config/hypr/bindings.lua",
+  "bar.shortcut.failed": "No unused shortcut was copied; see docs/shortcut.md"
+}

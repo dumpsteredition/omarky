@@ -1,0 +1,189 @@
+#!/usr/bin/env python3
+"""Print or copy one currently unused OMarky Hyprland Lua binding."""
+from __future__ import annotations
+
+import argparse
+import json
+import shlex
+import subprocess
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Callable
+
+PLUGIN_ROOT = Path(__file__).resolve().parent.parent
+APP_ENTRYPOINT = PLUGIN_ROOT / "app" / "omarky.py"
+
+
+@dataclass(frozen=True)
+class Candidate:
+    key: str
+    modifiers: str
+    display_modifiers: str
+    modmask: int
+
+    @property
+    def lua_chord(self) -> str:
+        return f"{self.modifiers} + {self.key}"
+
+    @property
+    def display(self) -> str:
+        return f"{self.display_modifiers}+{self.key}"
+
+
+# Try a mnemonic O first, then only present another candidate if the live bind
+# table says the earlier chord is occupied or ambiguous.
+KEY_ORDER = "OMYP UJKGVXQZBCSFHN RDETLIAW".replace(" ", "")
+MODIFIER_GROUPS = (
+    ("SUPER + CTRL + ALT", "Super+Ctrl+Alt", 76),
+    ("SUPER + SHIFT + CTRL + ALT", "Super+Shift+Ctrl+Alt", 77),
+    ("SUPER + SHIFT + CTRL", "Super+Shift+Ctrl", 69),
+    ("SUPER + SHIFT + ALT", "Super+Shift+Alt", 73),
+)
+CANDIDATES = tuple(
+    Candidate(key, modifiers, display, mask)
+    for modifiers, display, mask in MODIFIER_GROUPS
+    for key in KEY_ORDER
+)
+
+
+def _binding_mask(binding: dict[str, Any]) -> int:
+    value = binding.get("modmask")
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError("Hyprland returned an invalid modifier mask")
+    return value
+
+
+def binding_may_conflict(binding: dict[str, Any], candidate: Candidate) -> bool:
+    """Return true for an occupied or ambiguous active keyboard chord."""
+    if binding.get("mouse") is True:
+        return False
+
+    mask = _binding_mask(binding)
+    if mask != candidate.modmask:
+        return False
+
+    key = str(binding.get("key") or "").strip().upper()
+    keycode = binding.get("keycode", 0)
+    if key:
+        if key == candidate.key:
+            return True
+        # A nonzero keycode is a physical binding; without the user's active
+        # keyboard-layout map, do not claim that it cannot be this keysym.
+        return bool(keycode)
+
+    # A blank keysym can represent a physical keycode or a special binding.
+    # With this exact modifier chord, fail closed rather than guessing its key.
+    return True
+
+
+def choose_candidate(bindings: list[dict[str, Any]]) -> Candidate | None:
+    for candidate in CANDIDATES:
+        if not any(binding_may_conflict(item, candidate) for item in bindings):
+            return candidate
+    return None
+
+
+def _lua_quote(value: str) -> str:
+    escaped = (
+        value.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+        .replace("\t", "\\t")
+    )
+    return f'"{escaped}"'
+
+
+def render_binding(candidate: Candidate) -> str:
+    command = f"/usr/bin/python3 {shlex.quote(str(APP_ENTRYPOINT))} launch"
+    return "o.bind({}, {}, {})".format(
+        _lua_quote(candidate.lua_chord),
+        _lua_quote("Open OMarky"),
+        _lua_quote(command),
+    )
+
+
+def read_bindings(runner: Callable[..., Any]) -> list[dict[str, Any]]:
+    try:
+        result = runner(
+            ["hyprctl", "binds", "-j"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=4,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError("Could not read the active Hyprland bindings; no shortcut was suggested") from exc
+
+    if result.returncode != 0:
+        raise RuntimeError("hyprctl binds -j failed; no shortcut was suggested")
+    try:
+        bindings = json.loads(result.stdout)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("Hyprland returned invalid binding data; no shortcut was suggested") from exc
+    if not isinstance(bindings, list) or any(not isinstance(item, dict) for item in bindings):
+        raise RuntimeError("Hyprland returned an unexpected binding list; no shortcut was suggested")
+    for item in bindings:
+        try:
+            _binding_mask(item)
+        except ValueError as exc:
+            raise RuntimeError("Hyprland returned malformed binding data; no shortcut was suggested") from exc
+        if not isinstance(item.get("key", ""), str):
+            raise RuntimeError("Hyprland returned malformed binding data; no shortcut was suggested")
+        keycode = item.get("keycode", 0)
+        if isinstance(keycode, bool) or not isinstance(keycode, int):
+            raise RuntimeError("Hyprland returned malformed binding data; no shortcut was suggested")
+        if "mouse" in item and not isinstance(item["mouse"], bool):
+            raise RuntimeError("Hyprland returned malformed binding data; no shortcut was suggested")
+    return bindings
+
+
+def copy_to_clipboard(snippet: str, runner: Callable[..., Any]) -> None:
+    try:
+        result = runner(
+            ["wl-copy"],
+            check=False,
+            capture_output=True,
+            input=snippet + "\n",
+            text=True,
+            timeout=4,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError("wl-copy could not be started; no clipboard or config changes were made") from exc
+    if result.returncode != 0:
+        raise RuntimeError("wl-copy failed; no config changes were made")
+
+
+def main(argv: list[str] | None = None, *, runner: Callable[..., Any] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Show or explicitly copy one unused OMarky binding; never edits Hyprland config."
+    )
+    parser.add_argument(
+        "--copy",
+        action="store_true",
+        help="copy the selected Lua snippet to wl-clipboard (still does not edit config)",
+    )
+    args = parser.parse_args(argv)
+    command_runner = runner or subprocess.run
+
+    try:
+        candidate = choose_candidate(read_bindings(command_runner))
+        if candidate is None:
+            raise RuntimeError("No safely unused Super shortcut was found; nothing was copied or changed")
+        snippet = render_binding(candidate)
+        if args.copy:
+            copy_to_clipboard(snippet, command_runner)
+            print(f"Copied {candidate.display} snippet; paste it into ~/.config/hypr/bindings.lua.")
+        else:
+            print("Add this single binding to ~/.config/hypr/bindings.lua:")
+            print(snippet)
+            print("No config was edited. Review it, then validate with hyprctl reload and configerrors.")
+        return 0
+    except RuntimeError as exc:
+        print(f"omarky-shortcut: {exc}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

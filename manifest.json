@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.dumpsteredition.omarky",
+  "name": "OMarky",
+  "version": "0.1.0",
+  "author": "Dumpster Edition",
+  "description": "A user-triggered bar entry for OMarky's guided conversation tool",
+  "license": "MIT",
+  "repository": "https://github.com/dumpsteredition/omarky",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "OMarkyWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "OMarky",
+    "description": "Open the guided conversation tool or choose a conversation",
+    "category": "Tools",
+    "allowMultiple": false
+  }
+}
