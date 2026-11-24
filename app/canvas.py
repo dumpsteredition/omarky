@@ -718,6 +718,7 @@ class AnnotateOverlay:
         self.brush_width = BRUSH_DEFAULT_LOGICAL
         self.toolbar_position = "bottom"
         self.note_expanded = bool(note)
+        self._note_focus_pending = False
         self.last_marked_png: bytes | None = None
         self.closed = False
         self.window = Gtk.Window(type=Gtk.WindowType.TOPLEVEL)
@@ -892,7 +893,6 @@ class AnnotateOverlay:
 
         self.note_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         self.note_row.set_name("omarky-note-row")
-        self.note_row.set_no_show_all(True)
         self.toolbar.pack_start(self.note_row, False, False, 0)
         self.note_entry = Gtk.Entry()
         self.note_entry.set_name("omarky-note")
@@ -903,6 +903,7 @@ class AnnotateOverlay:
         self.note_entry.set_tooltip_text("Optional note included literally with Send or For chat")
         set_accessible_name(self.note_entry, "Optional note")
         self.note_entry.set_text(note)
+        self.note_entry.connect("map", self.on_note_entry_map)
         self.note_row.pack_start(self.note_entry, True, True, 0)
         self._update_controls()
 
@@ -943,11 +944,18 @@ class AnnotateOverlay:
             return
         self.note_expanded = not self.note_expanded
         if self.note_expanded:
-            self.note_row.show_all()
-            self.note_entry.grab_focus()
+            self._note_focus_pending = True
+            self.note_entry.show()
+            self.note_row.show()
         else:
+            self._note_focus_pending = False
             self.note_row.hide()
         self.note_toggle_button.set_label("Hide note" if self.note_expanded else "Note")
+
+    def on_note_entry_map(self, _entry: Gtk.Entry) -> None:
+        if self._note_focus_pending:
+            self._note_focus_pending = False
+            self.note_entry.grab_focus()
 
     def _set_status(self, message: str) -> None:
         self.status_label.set_text(message)
