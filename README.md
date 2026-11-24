@@ -4,6 +4,8 @@ Circle a detail on your desktop and send it, with a note, to the conversation al
 
 OMarky is a community plugin for the [Omarchy](https://omarchy.org) desktop. Click the mark in the bar to freeze the focused monitor, draw, undo, crop, or copy a marked PNG. **Send is separate from Copy.** Before you can send a desktop image, you pick a conversation and try the real pen on a practice card. Only the card goes to your chat during setup. No account password, API key or separate AI subscription goes into OMarky.
 
+![OMarky’s real practice canvas with the MP9 key circled and a chat selected](preview.png)
+
 ## Install
 
 ```sh

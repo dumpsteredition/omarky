@@ -48,6 +48,6 @@ Focused tests are standard-library `unittest` tests:
 python3 -m unittest discover -s tests -p 'test_codex*.py' -v
 ```
 
-The transport protocol can be exercised without a real model call by using a disposable `CODEX_HOME`, starting `codex app-server --listen unix://...`, and connecting through `codex app-server proxy --sock ...`. The lane's transport check creates and reads only a synthetic empty thread; it does not start a model turn or access normal user conversations.
+The 0.1.0 preview was exercised with Omarchy 4.5.0-3, Codex CLI 0.172.0, and two disposable conversations open in the real Codex terminal. In setup, the selected conversation read `MP9` from a circled practice key. OMarky saved that pairing; the other conversation received nothing. In a separate delivery check, the same terminal answered from both the attached picture and a fact from its own earlier turn. The desktop interactions were tested on an isolated Wayland display, not on anyone’s personal desktop.
 
 Official protocol reference: <https://developers.openai.com/codex/app-server>
