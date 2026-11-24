@@ -28,7 +28,7 @@ from typing import Any, Deque, Dict, Iterable, List, Mapping, Optional, Tuple
 
 
 _CONNECTOR = "codex"
-_CLIENT_INFO = {"name": "omarky", "title": "OMarky", "version": "0.1.0"}
+_CLIENT_INFO = {"name": "omarky", "title": "OMarky", "version": "0.2.0"}
 _WEBSOCKET_GUID = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 _MAX_HTTP_HEADER = 16 * 1024
 _MAX_WS_MESSAGE = 64 * 1024 * 1024

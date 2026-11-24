@@ -8,7 +8,7 @@ import sys
 from typing import BinaryIO, Callable
 
 SERVER_NAME = "omarky"
-SERVER_VERSION = "0.1.0"
+SERVER_VERSION = "0.2.0"
 TOOL_NAME = "read_annotation"
 SUPPORTED_PROTOCOLS = {
     "2024-11-05",

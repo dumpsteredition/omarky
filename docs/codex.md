@@ -38,7 +38,7 @@ OMarky does not invoke mise shims that could auto-update Codex; when available i
 - With `wait_reply=False`, `ok` means Codex returned an accepted `turn/start` response, not that a model completed. With `wait_reply=True`, OMarky consumes live `item/completed` and `turn/completed` notifications and reports `ok` only after an `agentMessage` item for the exact thread and returned `turn.id` is complete and that turn's status is `completed`. Partial deltas, tool items, other threads/turns, and incomplete statuses cannot produce success. A failed turn is `error`; interruption, timeout, transport loss after acceptance, or missing final text is `uncertain`. Check the paired conversation before any manual retry.
 - OMarky rejects app-server initiated approval/user-input requests; it is an image sender, not a general Codex approval client.
 
-The dispatcher in `app/routes.py` exposes only Codex in this public v1 and imports the adapter lazily. Missing setup is reported as guidance, never represented as a conversation.
+Only Codex is offered for direct Send. Other conversations use the separate [For chat handoff](../README.md#connect-your-chat). A missing receiver is reported as setup guidance, never as an available conversation.
 
 ## Verification
 

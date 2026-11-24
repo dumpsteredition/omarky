@@ -2,9 +2,9 @@
   "schemaVersion": 1,
   "id": "io.github.dumpsteredition.omarky",
   "name": "OMarky",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": "Dumpster Edition",
-  "description": "Mark a screenshot, add a note, and send them to the Codex conversation you choose.",
+  "description": "Circle a desktop detail. Send it to Codex or take the marked image and note to your current chat.",
   "license": "MIT",
   "repository": "https://github.com/dumpsteredition/omarky",
   "kinds": [
@@ -15,7 +15,7 @@
   },
   "barWidget": {
     "displayName": "OMarky",
-    "description": "Open the guided conversation tool or choose a conversation",
+    "description": "Mark the focused display or choose a chat for direct Send",
     "category": "Tools",
     "allowMultiple": false
   }

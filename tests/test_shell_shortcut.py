@@ -121,7 +121,7 @@ class ShellShortcutTests(unittest.TestCase):
 
         self.assertEqual(manifest["id"], "io.github.dumpsteredition.omarky")
         self.assertEqual(manifest["name"], "OMarky")
-        self.assertEqual(manifest["version"], "0.1.0")
+        self.assertEqual(manifest["version"], "0.2.0")
         self.assertEqual(manifest["license"], "MIT")
         self.assertEqual(manifest["repository"], "https://github.com/dumpsteredition/omarky")
         self.assertEqual(manifest["entryPoints"]["barWidget"], "OMarkyWidget.qml")
