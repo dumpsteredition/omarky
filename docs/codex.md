@@ -1,6 +1,6 @@
 # Codex pairing and routing
 
-OMarky connects to the Codex CLI app-server protocol and sends the marked PNG plus note as one `turn/start` input to an explicitly selected, already-loaded conversation. It does not create a new chat, resume a detached thread, fork history, edit Codex configuration, copy authentication, or invoke an alternate store writer.
+OMarky connects to the Codex CLI app-server protocol and sends the marked PNG plus note as one `turn/start` input to an explicitly selected, already-loaded conversation. It does not create a new chat, resume a detached thread, fork history, edit Codex configuration, copy authentication, or invoke an alternate store writer. When waiting for a reply, it may re-subscribe to that same thread only after confirming the ID is still loaded in the paired TUI.
 
 ## Pair an actual Codex TUI
 
@@ -31,10 +31,11 @@ OMarky does not invoke mise shims that could auto-update Codex; when available i
 ## Send and response semantics
 
 - The adapter uses only Python's standard library and `codex app-server proxy --sock PATH`. The Codex Unix transport is WebSocket over the proxy's raw stdio tunnel; each connection performs `initialize`/`initialized` before app-server calls.
-- Discovery calls `thread/list` and emits only loaded `idle` or `active` threads from a live OMarky-owned TUI lease. It does not load or resume a thread. Titles and project names are plain text labels only.
+- Discovery calls `thread/loaded/list`, then performs a metadata-only `thread/read` with `includeTurns: false` for each exact ID. It emits only `idle` or `active` threads from a live OMarky-owned TUI lease; it does not page the stored thread catalog or load/resume a thread. Titles and project names are plain text labels only.
 - Before a send, OMarky re-reads the selected thread with `includeTurns: false`. `active` means `busy`; `notLoaded`/missing targets mean `gone`; unrecognized state or app-server failure fails closed.
+- When `wait_reply=True`, OMarky first confirms the exact thread ID is still in `thread/loaded/list`, then calls documented `thread/resume` with `{threadId, excludeTurns: true}` on that already-loaded thread. It never uses resume to resurrect a detached or archived conversation.
 - A send uses `turn/start` with the exact selected `threadId`, the provided `request_id` as `clientUserMessageId`, and the note plus marked PNG data URL. The adapter does not send an unmarked/original image, retry a request automatically, or start a second turn to check the first.
-- With `wait_reply=False`, `ok` means Codex returned an accepted `turn/start` response, not that a model completed. With `wait_reply=True`, OMarky polls `thread/turns/list` for that returned `turn.id` and reports `ok` only after the same turn is `completed` and its final `agentMessage` text is available. A failed turn is `error`; interruption, timeout, transport loss after acceptance, or missing final text is `uncertain`. Check the paired conversation before any manual retry.
+- With `wait_reply=False`, `ok` means Codex returned an accepted `turn/start` response, not that a model completed. With `wait_reply=True`, OMarky consumes live `item/completed` and `turn/completed` notifications and reports `ok` only after an `agentMessage` item for the exact thread and returned `turn.id` is complete and that turn's status is `completed`. Partial deltas, tool items, other threads/turns, and incomplete statuses cannot produce success. A failed turn is `error`; interruption, timeout, transport loss after acceptance, or missing final text is `uncertain`. Check the paired conversation before any manual retry.
 - OMarky rejects app-server initiated approval/user-input requests; it is an image sender, not a general Codex approval client.
 
 The dispatcher in `app/routes.py` exposes only Codex in this public v1 and imports the adapter lazily. Missing setup is reported as guidance, never represented as a conversation.

@@ -1,8 +1,9 @@
 """Codex app-server route for OMarky.
 
 Only a Codex TUI launched by ``bin/omarky-codex`` can register a socket. The
-adapter never creates, resumes, or forks a conversation while discovering
-routes. A send is always addressed to the explicit, currently loaded thread ID.
+adapter discovers only threads loaded in that TUI and never creates or forks a
+conversation. A send is always addressed to the explicit loaded thread ID; it
+resumes only that already-loaded thread to receive its live turn notifications.
 """
 from __future__ import annotations
 
@@ -34,7 +35,6 @@ _MAX_WS_MESSAGE = 64 * 1024 * 1024
 _MAX_IMAGE_BYTES = 32 * 1024 * 1024
 _RPC_TIMEOUT = 8.0
 _WAIT_REPLY_TIMEOUT = 180.0
-_POLL_INTERVAL = 0.35
 
 
 class _RouteUnavailable(Exception):
@@ -612,37 +612,49 @@ def _thread_label(thread: Mapping[str, Any]) -> str:
     return label[:120]
 
 
-def _targets_from_session(client: _AppServerClient, endpoint: str) -> List[Dict[str, str]]:
-    targets: List[Dict[str, str]] = []
+def _loaded_thread_ids(client: _AppServerClient) -> List[str]:
+    """Read the paired TUI's loaded IDs, never the stored conversation catalog."""
+    thread_ids: List[str] = []
     cursor: Optional[str] = None
     seen_cursors = set()
     for _ in range(20):
-        params: Dict[str, Any] = {"limit": 100, "archived": False, "sourceKinds": ["cli", "vscode"]}
+        params: Dict[str, Any] = {"limit": 100}
         if cursor:
             params["cursor"] = cursor
-        response = client.request("thread/list", params)
+        response = client.request("thread/loaded/list", params)
         records = response.get("data")
-        if not isinstance(records, list):
-            raise _ProtocolFailure("Codex thread/list response was invalid.")
-        for thread in records:
-            if not isinstance(thread, dict) or _status_type(thread) not in {"idle", "active"}:
-                continue
-            thread_id = thread.get("id")
-            if not isinstance(thread_id, str) or not thread_id:
-                continue
-            targets.append({
-                "connector": _CONNECTOR,
-                "endpoint": endpoint,
-                "thread_id": thread_id,
-                "label": _thread_label(thread),
-            })
+        if not isinstance(records, list) or any(not isinstance(item, str) or not item for item in records):
+            raise _ProtocolFailure("Codex thread/loaded/list response was invalid.")
+        thread_ids.extend(records)
         next_cursor = response.get("nextCursor")
-        if not next_cursor:
-            break
-        if not isinstance(next_cursor, str) or next_cursor in seen_cursors:
-            raise _ProtocolFailure("Codex thread/list returned a repeated pagination cursor.")
+        if next_cursor is None:
+            return thread_ids
+        if not isinstance(next_cursor, str) or not next_cursor or next_cursor in seen_cursors:
+            raise _ProtocolFailure("Codex thread/loaded/list returned a repeated pagination cursor.")
         seen_cursors.add(next_cursor)
         cursor = next_cursor
+    raise _ProtocolFailure("Codex thread/loaded/list exceeded the pagination limit.")
+
+
+def _targets_from_session(client: _AppServerClient, endpoint: str) -> List[Dict[str, str]]:
+    targets: List[Dict[str, str]] = []
+    for thread_id in _loaded_thread_ids(client):
+        try:
+            response = client.request("thread/read", {"threadId": thread_id, "includeTurns": False})
+        except _RPCFailure:
+            # A thread can close between loaded/list and its exact metadata read.
+            continue
+        thread = response.get("thread")
+        if not isinstance(thread, dict) or thread.get("id") != thread_id:
+            continue
+        if _status_type(thread) not in {"idle", "active"}:
+            continue
+        targets.append({
+            "connector": _CONNECTOR,
+            "endpoint": endpoint,
+            "thread_id": thread_id,
+            "label": _thread_label(thread),
+        })
     return targets
 
 
@@ -687,48 +699,61 @@ def _rpc_status(error: _RPCFailure, *, after_turn_start: bool = False) -> Tuple[
     return "error", "Codex rejected the request. Refresh the target and try again if it is still open."
 
 
-def _agent_text(items: Any) -> Optional[str]:
-    if not isinstance(items, list):
-        return None
-    messages = []
-    for item in items:
-        if not isinstance(item, dict) or item.get("type") != "agentMessage":
-            continue
-        text = item.get("text")
-        if isinstance(text, str) and text.strip():
-            messages.append(text)
-    return messages[-1] if messages else None
-
-
 def _wait_for_final_turn(client: _AppServerClient, thread_id: str, turn_id: str,
                          timeout: float) -> Tuple[str, Optional[str]]:
     deadline = time.monotonic() + timeout
+    final_message: Optional[str] = None
+    turn_status: Optional[str] = None
     while time.monotonic() < deadline:
         try:
-            page = client.request("thread/turns/list", {
-                "threadId": thread_id,
-                "limit": 50,
-                "sortDirection": "desc",
-                "itemsView": "full",
-            }, timeout=min(_RPC_TIMEOUT, max(0.5, deadline - time.monotonic())))
-        except _RPCFailure as exc:
-            status, _message = _rpc_status(exc)
-            return ("gone" if status == "gone" else "uncertain"), None
-        except (TimeoutError, _RouteUnavailable, _ProtocolFailure, OSError):
+            if client.pending:
+                message = client.pending.popleft()
+            else:
+                message = client._receive_json(deadline)
+        except TimeoutError:
+            return "timeout", None
+        except _RouteUnavailable:
+            return "gone", None
+        except (_ProtocolFailure, OSError):
             return "uncertain", None
-        turns = page.get("data")
-        if not isinstance(turns, list):
-            return "uncertain", None
-        selected = next((item for item in turns if isinstance(item, dict) and item.get("id") == turn_id), None)
-        if selected is not None:
-            status = selected.get("status")
-            if status == "completed":
-                return "completed", _agent_text(selected.get("items"))
-            if status == "failed":
+        if not isinstance(message, dict):
+            continue
+        # Retain the request() safety rule while no request is outstanding:
+        # never approve app-server initiated permission or input requests.
+        if "id" in message and "method" in message:
+            try:
+                client._send_rpc({"id": message["id"], "error": {
+                    "code": -32601, "message": "OMarky does not handle Codex server requests."}})
+            except (_RouteUnavailable, _ProtocolFailure, OSError):
+                return "gone", None
+            continue
+        method = message.get("method")
+        params = message.get("params")
+        if not isinstance(params, dict):
+            continue
+        if method == "thread/closed" and params.get("threadId") == thread_id:
+            return "gone", None
+        if method == "item/completed":
+            if params.get("threadId") != thread_id or params.get("turnId") != turn_id:
+                continue
+            item = params.get("item")
+            if isinstance(item, dict) and item.get("type") == "agentMessage":
+                text = item.get("text")
+                if isinstance(text, str) and text.strip():
+                    final_message = text
+        elif method == "turn/completed":
+            if params.get("threadId") != thread_id:
+                continue
+            turn = params.get("turn")
+            if not isinstance(turn, dict) or turn.get("id") != turn_id:
+                continue
+            turn_status = turn.get("status") if isinstance(turn.get("status"), str) else None
+            if turn_status == "failed":
                 return "failed", None
-            if status == "interrupted":
+            if turn_status == "interrupted":
                 return "interrupted", None
-        time.sleep(min(_POLL_INTERVAL, max(0.0, deadline - time.monotonic())))
+        if turn_status == "completed" and final_message is not None:
+            return "completed", final_message
     return "timeout", None
 
 
@@ -760,6 +785,8 @@ def send(target: Mapping[str, Any], png: bytes, note: str, *, request_id: str,
         with client_context as client:
             client.initialize()
             try:
+                if thread_id not in _loaded_thread_ids(client):
+                    return {"status": "gone", "message": "That conversation is no longer loaded in the paired Codex TUI. Reopen it there and refresh targets."}
                 status = _target_status(client, thread_id)
             except _RPCFailure as exc:
                 return {"status": _rpc_status(exc)[0], "message": _rpc_status(exc)[1]}
@@ -771,6 +798,23 @@ def send(target: Mapping[str, Any], png: bytes, note: str, *, request_id: str,
                 return {"status": "uncertain", "message": "Codex reports an error for this conversation. Check it in the paired TUI."}
             if status != "idle":
                 return {"status": "uncertain", "message": "Codex could not confirm that the selected conversation is ready."}
+            if wait_reply:
+                try:
+                    resumed = client.request("thread/resume", {"threadId": thread_id, "excludeTurns": True})
+                except _RPCFailure as exc:
+                    return {"status": _rpc_status(exc)[0], "message": _rpc_status(exc)[1]}
+                resumed_thread = resumed.get("thread")
+                if not isinstance(resumed_thread, dict) or resumed_thread.get("id") != thread_id:
+                    return {"status": "gone", "message": "The selected Codex conversation is no longer available in the paired TUI."}
+                resumed_status = _status_type(resumed_thread)
+                if resumed_status == "active":
+                    return {"status": "busy", "message": "Codex is already working in this conversation. Wait for it to finish, then send again."}
+                if resumed_status == "notLoaded":
+                    return {"status": "gone", "message": "That conversation is no longer open in the paired Codex TUI. Reopen it there and refresh targets."}
+                if resumed_status == "systemError":
+                    return {"status": "uncertain", "message": "Codex reports an error for this conversation. Check it in the paired TUI."}
+                if resumed_status != "idle":
+                    return {"status": "uncertain", "message": "Codex could not confirm that the selected conversation is ready."}
             image_data = base64.b64encode(png).decode("ascii")
             params = {
                 "threadId": thread_id,
