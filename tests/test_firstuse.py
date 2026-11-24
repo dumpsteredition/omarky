@@ -432,6 +432,28 @@ class FirstUsePickerTests(unittest.TestCase):
 
 
 class FirstUseCliTests(unittest.TestCase):
+    def test_gtk_modules_pins_gtk3_and_gdk3_in_clean_process(self):
+        script = (
+            "import gi; "
+            "from app.omarky import _gtk_modules; "
+            "Gdk, _GLib, Gtk = _gtk_modules(); "
+            "assert Gtk.MAJOR_VERSION == 3; "
+            "assert gi.get_required_version('Gtk') == '3.0'; "
+            "assert gi.get_required_version('Gdk') == '3.0'; "
+            "assert Gdk._version == '3.0'"
+        )
+        repo_root = Path(__file__).resolve().parents[1]
+        completed = subprocess.run(
+            ["/usr/bin/python3", "-c", script],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            cwd=repo_root,
+            env={**os.environ, "DISPLAY": "", "WAYLAND_DISPLAY": ""},
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+
     def test_help_does_not_open_gtk_or_connectors(self):
         script = Path(__file__).resolve().parents[1] / "app" / "omarky.py"
         completed = subprocess.run(
