@@ -1,10 +1,22 @@
-# OMarky
+<p align="center"><img src="docs/media/omarky-wordmark.svg" width="620" alt="OMarky: a red marker stroke forms the O in the stepped wordmark" /></p>
 
-Circle a detail on your desktop and send it, with a note, to the conversation already working on it.
+# “No, the *other* mute button.”
 
-OMarky is a community plugin for the [Omarchy](https://omarchy.org) desktop. Click the mark in the bar to freeze the focused monitor, draw, undo, crop, or copy a marked PNG. **Send is separate from Copy.** Before you can send a desktop image, you pick a conversation and try the real pen on a practice card. Only the card goes to your chat during setup. No account password, API key or separate AI subscription goes into OMarky.
+There are three mute buttons on your screen. You know which one you mean. Your agent has managed to narrow it down to three.
 
-![OMarky’s real practice canvas with the MP9 key circled and a chat selected](preview.png)
+**Stop describing what you mean. Show your agent.** OMarky puts a red pen on your [Omarchy](https://omarchy.org) desktop. Circle the thing, add your question, and carry on in the chat you already have open.
+
+![Screen recording: the cursor circles a Mute button, types a question in OMarky, then shows the reply in Codex](docs/media/soundcheck.gif)
+
+[Install](#install) · [Connect your chat](#connect-your-chat) · [Set a shortcut](docs/shortcut.md)
+
+## Keep the conversation
+
+**Already working in Codex?** Pair that conversation once. The next time something looks off, open OMarky, circle it, and hit **Send**. The PNG and your note land in the chat you picked. The terminal that happens to have focus doesn't get a vote.
+
+**Working in Claude Code, Grok, or another agent?** Click **For chat**. OMarky copies one message with your note and a reference to the marked picture. Paste it into your current chat and send it there. A local agent can open the PNG itself or fetch it with the [optional connection below](#connect-your-chat).
+
+**Just want the picture?** **Copy** puts the marked PNG on your clipboard without contacting an agent. OMarky freezes the whole focused display, so crop first if the rest of the screen is nobody's business.
 
 ## Install
 
@@ -12,41 +24,78 @@ OMarky is a community plugin for the [Omarchy](https://omarchy.org) desktop. Cli
 omarchy plugin add https://github.com/dumpsteredition/omarky.git --enable
 ```
 
-Review Omarchy’s prompt: third-party plugins run with your user’s permissions. OMarky does not install packages, switch your default agent, or overwrite your keybindings. The public plugin ID is `io.github.dumpsteredition.omarky`.
+Click the mark in your bar. If you're updating an existing install to get **For chat**, run `omarchy plugin update io.github.dumpsteredition.omarky`. No hotkey is required. Right-click the mark if you want to copy a suggested unused shortcut; you review and add the binding yourself.
 
-**Requirements:** Omarchy’s Quickshell bar and Hyprland desktop, Python 3 with PyGObject and Pycairo, GTK 3, GTK Layer Shell, `hyprctl` and `grim`. Copy uses `wl-copy` from `wl-clipboard`. On Arch the relevant packages are `python-gobject`, `python-cairo`, `gtk3`, `gtk-layer-shell`, `grim`, and `wl-clipboard`. For chat delivery you also need a supported, signed-in agent with image input. Marking and copying do not require an agent.
+## Connect your chat
 
-## Try it
+**Without setup:** choose **For chat** on the welcome screen. Draw, click **Note** if you have a question, then click **For chat** on the canvas. Paste the resulting message into the conversation you want. It includes an absolute path to the **marked** PNG. If your local agent can read images at that path, you're done. For a web chat or an agent on another machine, use **Copy** and paste or attach the actual image in that chat; a path on your laptop won't work remotely. Either route needs a model that can see images.
 
-1. Open OMarky from the bar and click **Choose a chat**. If none are connected yet, select **Open Codex picker…**. In Codex’s own terminal, choose the existing conversation you want to keep working in and leave it open. Return to OMarky and click **Rescan**. If the picker button is unavailable, use the [terminal pairing instructions](docs/codex.md).
-2. Choose the conversation by project and title. A practice card appears. Circle **any one key** and press **Send**. Your chat gets the marked PNG and editable question. Its answer must identify that key before OMarky saves this connection.
-3. Now open OMarky over your work. Draw, add a note if you like, and press **Send**. By default the image is the full focused display, including everything visible on it; choose **Crop** to share only a region. Copy sends nothing to your agent. Escape closes the canvas.
+### Codex: send directly
 
-The cog reopens setup. You can pair a second conversation the same way, and then choose between verified conversations while marking. If the chosen chat is gone, OMarky does not switch to a different one. If a send’s outcome is uncertain, inspect the original chat before sending anything again. A newly opened pairing may require the card again.
+1. Click **Choose a chat**. If none are connected yet, click **Open Codex picker…**, open your existing conversation in Codex's own terminal, and click **Rescan** in OMarky. Leave that paired terminal open.
+2. Choose the conversation by project and title. Circle any key on the practice card and press **Send**. The chat has to read that key from the picture before OMarky remembers it. Your desktop isn't in the test image.
+3. Open OMarky over your work, mark it, then **Send**. The cog reopens setup. If the chosen chat disappears, OMarky won't pick another; if delivery is uncertain, check the chat before trying again.
 
-**Optional shortcut:** right-click the OMarky bar icon to copy a suggested free Hyprland binding. Review and add the line yourself, or just keep using the bar. See [shortcut details](docs/shortcut.md).
+[See the practice card](preview.png) · [Codex setup and troubleshooting](docs/codex.md)
 
-## Agent support
+### Claude Code, Grok, and other local agents: fetch the picture
 
-**Codex:** direct Send targets a conversation open in the paired Codex terminal. Your agent uses its own account, model, and permissions; a local connection to the terminal does not make a cloud model run offline.
+If you'd rather not rely on image-path handling, register OMarky's **local MCP tool** once. The agent can then retrieve the PNG **and** your literal note using the card ID you paste. It can't browse your screenshots. Registration doesn't send a mark, launch a model, or change your default agent.
 
-**Claude Code and Grok:** use **Copy**, then paste into the chat you choose. Neither is offered as a direct Send destination in this preview. [Claude Code channels](https://code.claude.com/docs/en/channels) require an opted-in session; [Grok’s documented scripting interface](https://docs.x.ai/build/cli/headless-scripting) does not establish delivery to an already-open terminal. OMarky does not open a substitute chat.
-
-## Update or remove
+Open a terminal **on the same desktop, as the same user**. Set this once in that shell, then run the command for your client:
 
 ```sh
-omarchy plugin update io.github.dumpsteredition.omarky
+OMARKY="$HOME/.config/omarchy/plugins/io.github.dumpsteredition.omarky"
+```
+
+**Claude Code** — run this from the project where you want the connection. `--scope local` keeps the registration private to you in this project.
+
+```sh
+claude mcp add --transport stdio --scope local omarky -- \
+  /usr/bin/env "XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-}" /usr/bin/python3 "$OMARKY/bin/omarky-mcp"
+claude mcp get omarky
+```
+
+Look for **Connected**. Check `/mcp` in Claude Code. If the current session hasn't picked up the server, reopen Claude Code in that project and resume **the same conversation**. [Claude Code's MCP documentation](https://code.claude.com/docs/en/mcp)
+
+**Grok** — this registers the reader in your Grok user configuration:
+
+```sh
+grok mcp add omarky -- \
+  /usr/bin/env "XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-}" /usr/bin/python3 "$OMARKY/bin/omarky-mcp"
+grok mcp doctor omarky
+```
+
+Look for a successful handshake and **one tool discovered**. In the open Grok chat, use `/mcps` and press `r` to refresh. [Grok's MCP documentation](https://docs.x.ai/build/features/mcp-servers)
+
+**Another local client:** add a **stdio** server named `omarky`. Set the executable to `/usr/bin/python3`, its single argument to the **absolute** path printed by `printf '%s\n' "$OMARKY/bin/omarky-mcp"`, and its `XDG_RUNTIME_DIR` environment value to the one from your desktop shell. The single tool is `read_annotation`; its argument is `card_id`. Both processes need access to the same local card directory. A restricted or text-only client may still require you to attach the PNG manually.
+
+**Try the connection:** draw on something recognizable, type a question like “Which button did I circle?”, and click **For chat**. Paste that message into the chosen conversation, submit it, and approve the tool call there if asked. The answer should identify what you circled. A green connection check by itself only proves the tool is reachable.
+
+### Privacy and cleanup
+
+- **Send** uses your paired Codex session's normal model, account, and permissions. **For chat** prepares a card; you decide which conversation gets it. A local tool connection doesn't mean the model runs offline.
+- Cards contain the marked (or cropped) PNG and the note. They live in owner-private directories under `$XDG_RUNTIME_DIR/omarky/cards`, or `~/.cache/omarky/cards` if no runtime directory is set. The reader rejects cards after **30 minutes**. Old files are pruned on the next card operation, not by a timer. Clipboard history or a chat that already received the image can retain its own copy.
+- To remove a card immediately, run `"$OMARKY/bin/omarky-forget" CARD_ID` with the ID from the handoff. `"$OMARKY/bin/omarky-forget" --all` clears all OMarky cards for this user, not your chats.
+
+## Requirements and removal
+
+OMarky is a community Quickshell bar plugin for Omarchy/Hyprland (`io.github.dumpsteredition.omarky`). Review Omarchy's installation prompt: third-party plugins run with your user's permissions. The canvas needs Python 3, `python-gobject`, `python-cairo`, `gtk3`, `gtk-layer-shell`, `hyprctl`, `grim`, and `wl-clipboard`. The optional MCP reader needs only Python's standard library. Direct **Send** requires a signed-in, image-capable Codex CLI. Nothing switches agents, installs dependencies, or overwrites keybindings for you.
+
+Before uninstalling, close any paired terminal, clear any cards you want deleted now, and remove any optional registration you added (`claude mcp remove omarky --scope local` from that project, or `grok mcp remove omarky`). Then:
+
+```sh
 omarchy plugin disable io.github.dumpsteredition.omarky
 omarchy plugin remove io.github.dumpsteredition.omarky
 ```
 
-Close any Codex pairing terminal first. If you added a shortcut, remove that one `o.bind(...)` line from your Hyprland bindings. Preferences are separate from the plugin: by default `~/.config/omarky/verified-targets.json` records your verified destination identities and labels. Removing the `omarky` preferences directory under your own `$XDG_CONFIG_HOME` (or `~/.config`) forgets them. Removing OMarky does not delete your agent conversations.
+Remove your optional shortcut if you added one. Verified destination preferences live in `${XDG_CONFIG_HOME:-$HOME/.config}/omarky/`. Removing OMarky doesn't delete agent conversations.
 
 ## Development
 
 ```sh
 omarchy plugin validate .
-/usr/bin/python3 -B -m unittest discover -s tests -v
+/usr/bin/python3 -B -m unittest discover -s tests
 ```
 
-The native GTK/Cairo drawing experience was adapted from Rare Tools’ annotator. OMarky is independent of Omarchy, OpenAI, Anthropic and xAI. Released under the [MIT License](LICENSE).
+The marking canvas grew out of Rare Tools. The lettering nods to [Omarchy's wordmark](https://github.com/omacom/omarchy/blob/master/logo.svg); the red O is a pen stroke. OMarky is independent of Omarchy, OpenAI, Anthropic, and xAI. [MIT license](LICENSE).
